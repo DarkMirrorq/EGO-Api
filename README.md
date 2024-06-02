@@ -5,6 +5,11 @@ Bu apide ego verilerini çekiyoruz tamamen yasal sayfa üzerinden veri alıyoruz
 
 ## API Kullanımı
 
+| Varsayılan Kullanıcı Adı | Şifre |
+| :-------- | :------- |
+| `test` | `test` |
+
+
 #### Otobüs Dakika Alma
 ```http
   GET /api/otobus_dakika
