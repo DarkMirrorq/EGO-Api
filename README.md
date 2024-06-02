@@ -5,7 +5,7 @@ Bu apide ego verilerini çekiyoruz tamamen yasal sayfa üzerinden veri alıyoruz
 
 ## API Kullanımı
 
-#### Otobüs Dakika Çekme
+#### **Otobüs Dakika Çekme**
 ```http
   GET /api/otobus_dakika
 ```
@@ -22,7 +22,7 @@ Bu apide ego verilerini çekiyoruz tamamen yasal sayfa üzerinden veri alıyoruz
 
 
 ##
-#### EGO'ya Bildirilen Kayıp Kartları Çekme
+#### **EGO'ya Bildirilen Kayıp Kartları Çekme**
 
 ```http
   GET /api/kayipkartlar
@@ -33,7 +33,7 @@ Bu apide ego verilerini çekiyoruz tamamen yasal sayfa üzerinden veri alıyoruz
 | `Basic Authentication` | `Json` | 1,5 Second |
 
 ##
-#### Kart Satış ve Dolum Bayileri Listesi
+#### **Kart Satış ve Dolum Bayileri Listesi**
 
 ```http
   GET /api/bayiler
