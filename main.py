@@ -181,3 +181,4 @@ def get_otobus_dakika():
 if __name__ == '__main__':
     create_users_table()
     app.run(debug=True)
+#SON
