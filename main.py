@@ -1,184 +1,226 @@
-from flask import Flask, jsonify, request, Response
-import sqlite3
+"""
+EGO-Api - Ankara EGO Genel Müdürlüğü Otobüs ve Ulaşım API Servisi
+Tersine mühendislik ile resmi mobil servisler üzerinden yüksek hızlı REST API.
+"""
+
 from functools import wraps
-import requests
-from bs4 import BeautifulSoup
 import json
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service as ChromeService
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from chromedriver_py import binary_path
+import os
+import sqlite3
+from flask import Flask, Response, jsonify, request
+import requests
 
 app = Flask(__name__)
+app.config["JSON_AS_ASCII"] = False
 
-def create_users_table():
-    conn = sqlite3.connect('kullanicilar.db')
+EGO_BASE_URL = "https://egocptsrvand.ego.gov.tr"
+TIMEOUT = 8
+
+# Kimlik doğrulama ayarı: Varsayılan olarak kapalıdır (False).
+# Ortam değişkeni REQUIRE_AUTH=true yapılarak aktif edilebilir.
+AUTH_REQUIRED = os.environ.get("REQUIRE_AUTH", "false").lower() in ("true", "1")
+DB_NAME = "kullanicilar.db"
+
+
+def init_db():
+    conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS kullanicilar
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  username TEXT,
-                  password TEXT)''')
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS kullanicilar (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE,
+            password TEXT
+        )"""
+    )
     conn.commit()
     conn.close()
 
-def get_db_connection():
-    conn = sqlite3.connect('kullanicilar.db')
-    conn.row_factory = sqlite3.Row
-    return conn
-
-def close_db_connection(conn):
-    conn.close()
-
-def execute_query(query, args=()):
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute(query, args)
-    conn.commit()
-    conn.close()
-
-def fetch_one(query, args=()):
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute(query, args)
-    result = c.fetchone()
-    conn.close()
-    return result
-
-def register_user(username, password):
-    execute_query('INSERT INTO kullanicilar (username, password) VALUES (?, ?)', (username, password))
 
 def check_auth(username, password):
-    user = fetch_one('SELECT * FROM kullanicilar WHERE username=? AND password=?', (username, password))
-    if user:
-        return True
-    else:
-        return False
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute(
+        "SELECT id FROM kullanicilar WHERE username=? AND password=?",
+        (username, password),
+    )
+    user = c.fetchone()
+    conn.close()
+    return user is not None
+
 
 def requires_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
+        if not AUTH_REQUIRED:
+            return f(*args, **kwargs)
+
         auth = request.authorization
         if not auth or not check_auth(auth.username, auth.password):
-            return jsonify({'message': 'Unauthorized access'}), 401
+            return (
+                jsonify(
+                    {"hata": "Yetkisiz erişim. Geçerli Basic Auth bilgileri gereklidir."}
+                ),
+                401,
+            )
         return f(*args, **kwargs)
+
     return decorated
 
-def kayipkartlar():
-    url = "https://www.ego.gov.tr/tr/kayip/Ankarakart"
-    response = requests.get(url)
-    response.encoding = 'utf-8'
-    soup = BeautifulSoup(response.content, 'html.parser')
 
-    table = soup.find('table', {'id': 'kayipkarttablosu'})
-    if not table:
-        return []
-
-    rows = table.find_all('tr')
-    headers = [header.text for header in rows[0].find_all('th')]
-    kayipkartlar = []
-
-    for row in rows[1:]:
-        cells = row.find_all('td')
-        card_data = {headers[i]: cells[i].text for i in range(len(headers))}
-        kayipkartlar.append(card_data)
-
-    return kayipkartlar
+def make_response(data, status=200):
+    return Response(
+        json.dumps(data, ensure_ascii=False),
+        status=status,
+        content_type="application/json; charset=utf-8",
+    )
 
 
-def bayiler():
-    url = "https://www.ankarakart.com.tr/islem-merkezi"
-    response = requests.get(url)
-    response.encoding = 'utf-8'
-    soup = BeautifulSoup(response.content, 'html.parser')
-
-    table = soup.find('table', {'id': 'satisbayiler'})
-    if not table:
-        return []
-
-    rows = table.find_all('tr')
-    headers = [header.text for header in rows[0].find_all('th')]
-    bayiler = []
-
-    for row in rows[1:]:
-        cells = row.find_all('td')
-        card_data = {headers[i]: cells[i].text for i in range(len(headers))}
-        bayiler.append(card_data)
-
-    return bayiler
-
-def otobus_dakika(durak_no, hat_no):
-    url = f'https://www.ego.gov.tr/tr/otobusnerede?durak_no={durak_no}&hat_no={hat_no}'
-    
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")  # Headless mod
-    service = ChromeService(executable_path=binary_path)
-    driver = webdriver.Chrome(service=service, options=chrome_options)
-    driver.get(url)
-
-    # time.sleep(2)  
-    driver.execute_script(f"OtobusNerede({durak_no}, {hat_no})")
-
-    # time.sleep(5)
-
-    soup = BeautifulSoup(driver.page_source, 'html.parser')
-    driver.quit()
-
-    table = soup.find('table', {'class': 'list'})
-    if not table:
-        return []
-
-    headers = [header.text for header in table.find('tr').find_all('th')]
-    rows = table.find_all('tr')[1:]
-    data = []
-
-    for row in rows:
-        cells = row.find_all('td')
-        if len(cells) == 0:
-            continue
-        row_data = {headers[i]: cells[i].text.strip() for i in range(len(cells))}
-        
-        additional_info_row = row.find_next_sibling('tr')
-        additional_info = additional_info_row.find('td').text.strip() if additional_info_row else None
-        
-        if additional_info:
-            row_data['Detay'] = additional_info
-        
-        data.append(row_data)
-
-    return data
-
-@app.route('/api/kayipkartlar', methods=['GET'])
-@requires_auth
-def get_kayipkartlar():
-    data = kayipkartlar()
-    return Response(json.dumps(data, ensure_ascii=False), content_type='application/json; charset=utf-8')
+def ego_request(path, params=None):
+    url = f"{EGO_BASE_URL}{path}"
+    headers = {
+        "User-Agent": "okhttp/4.9.2",
+        "Accept": "application/json",
+    }
+    try:
+        res = requests.get(url, params=params, headers=headers, timeout=TIMEOUT)
+        res.raise_for_status()
+        return res.json()
+    except requests.exceptions.Timeout:
+        return {"hata": "EGO sunucu yanıt zaman aşımına uğradı."}
+    except requests.exceptions.RequestException as e:
+        return {"hata": f"EGO servisine bağlanırken bir hata oluştu: {str(e)}"}
+    except json.JSONDecodeError:
+        return {"hata": "EGO servisinden geçersiz yanıt alındı."}
 
 
-@app.route('/api/bayiler', methods=['GET'])
-@requires_auth
-def get_bayiler():
-    data = bayiler()
-    return Response(json.dumps(data, ensure_ascii=False), content_type='application/json; charset=utf-8')
+@app.route("/", methods=["GET"])
+def index():
+    return make_response(
+        {
+            "servis": "EGO REST API",
+            "durum": "aktif",
+            "surum": "2.0.0",
+            "dokumantasyon": "https://github.com/DarkMirrorq/EGO-Api",
+            "endpointler": {
+                "otobus_dakika": "/api/otobus_dakika?durak_no=10001[&hat_no=415]",
+                "durak_hatlar": "/api/durak_hatlar?durak_no=10001",
+                "hat_ara": "/api/hat_ara?hat_no=185",
+                "hat_duraklar": "/api/hat_duraklar?hat_kod=185",
+                "bayiler": "/api/bayiler",
+                "duyurular": "/api/duyurular",
+                "bakiye": "/api/bakiye?kart_no=12345678901",
+            },
+        }
+    )
 
 
-@app.route('/api/otobus_dakika', methods=['GET'])
+@app.route("/api/otobus_dakika", methods=["GET"])
 @requires_auth
 def get_otobus_dakika():
-    durak_no = request.args.get('durak_no')
-    hat_no = request.args.get('hat_no')
+    """Belirtilen duraktaki otobüs varış sürelerini getirir."""
+    durak_no = request.args.get("durak_no")
+    hat_no = request.args.get("hat_no")
 
-    if not durak_no or not hat_no:
-        return Response(json.dumps({'Hata': 'Durak No ve Hat No gönderilmesi zorunludur.'}, ensure_ascii=False), content_type='application/json; charset=utf-8'), 400
+    if not durak_no:
+        return make_response(
+            {"hata": "'durak_no' parametresi zorunludur."}, status=400
+        )
 
-    data = otobus_dakika(durak_no, hat_no)
-    
-    if not data:
-        return Response(json.dumps({'Mesaj': 'Sefer yok'}, ensure_ascii=False), content_type='application/json; charset=utf-8'), 200
+    data = ego_request(f"/hibrit/srv.asp?&LAN=tr&FNC=Otobusler&DURAK={durak_no}")
 
-    return Response(json.dumps(data, ensure_ascii=False), content_type='application/json; charset=utf-8')
+    if isinstance(data, dict) and "hata" in data:
+        return make_response(data, status=502)
 
-if __name__ == '__main__':
-    create_users_table()
-    app.run(debug=True)
-#SON
+    if not isinstance(data, list):
+        return make_response([], status=200)
+
+    # İsteğe bağlı hat_no filtrelemesi
+    if hat_no:
+        hat_str = str(hat_no).strip()
+        filtered = [
+            bus
+            for bus in data
+            if str(bus.get("hat_no", "")).strip() == hat_str
+            or str(bus.get("hat_kod", "")).strip() == hat_str
+        ]
+        if not filtered:
+            return make_response(
+                {"mesaj": f"{hat_no} numaralı hat için yaklaşan sefer bulunamadı."},
+                status=200,
+            )
+        return make_response(filtered)
+
+    return make_response(data)
+
+
+@app.route("/api/durak_hatlar", methods=["GET"])
+@requires_auth
+def get_durak_hatlar():
+    """Belirtilen duraktan geçen tüm hatların listesini döner."""
+    durak_no = request.args.get("durak_no")
+    if not durak_no:
+        return make_response(
+            {"hata": "'durak_no' parametresi zorunludur."}, status=400
+        )
+
+    data = ego_request(f"/hibrit/action.asp?FNC=DuraktanGecenHatlar&KOD={durak_no}")
+    return make_response(data)
+
+
+@app.route("/api/hat_ara", methods=["GET"])
+@requires_auth
+def get_hat_ara():
+    """Hat numarasına veya adına göre arama yapar."""
+    hat_no = request.args.get("hat_no") or request.args.get("query")
+    if not hat_no:
+        return make_response({"hata": "'hat_no' parametresi zorunludur."}, status=400)
+
+    data = ego_request(f"/hibrit/action.asp?FNC=HatAra&QUERY={hat_no}")
+    return make_response(data)
+
+
+@app.route("/api/hat_duraklar", methods=["GET"])
+@requires_auth
+def get_hat_duraklar():
+    """Bir hattın güzergahındaki tüm durakları döner."""
+    hat_kod = request.args.get("hat_kod") or request.args.get("hat_no")
+    if not hat_kod:
+        return make_response(
+            {"hata": "'hat_kod' parametresi zorunludur."}, status=400
+        )
+
+    data = ego_request(f"/hibrit/action.asp?FNC=HatDuraklar&KOD={hat_kod}")
+    return make_response(data)
+
+
+@app.route("/api/bayiler", methods=["GET"])
+@requires_auth
+def get_bayiler():
+    """Tüm Ankarakart bayilerini ve koordinatlarını listeler."""
+    data = ego_request("/hibrit/action.asp?FNC=AnkaraKartBayiler")
+    return make_response(data)
+
+
+@app.route("/api/duyurular", methods=["GET"])
+@requires_auth
+def get_duyurular():
+    """EGO resmi duyuru ve haber akışını döner."""
+    data = ego_request("/hibrit/action.asp?FNC=Duyurular")
+    return make_response(data)
+
+
+@app.route("/api/bakiye", methods=["GET"])
+@requires_auth
+def get_bakiye():
+    """Ankarakart bakiye sorgulama."""
+    kart_no = request.args.get("kart_no")
+    if not kart_no:
+        return make_response({"hata": "'kart_no' parametresi zorunludur."}, status=400)
+
+    data = ego_request(f"/hibrit/action.asp?FNC=AnkaraKartBakiye&KART={kart_no}")
+    return make_response(data)
+
+
+if __name__ == "__main__":
+    init_db()
+    app.run(host="0.0.0.0", port=5000, debug=True)
